@@ -1,99 +1,176 @@
 import streamlit as st
 from streamlit_gsheets import GSheetsConnection
 import pandas as pd
+import time
 
-# 1. ESTO DEBE IR PRIMERO SIEMPRE (Configuración de página)
+# --- 1. CONFIGURACIÓN INICIAL ---
 st.set_page_config(page_title="Caserito Store", page_icon="✂️", layout="wide")
+st.title("✂️ Caserito Store: Sistema de Producción")
 
-st.title("✂️ Caserito Store: Control de Inventario")
-
-# 2. BOTÓN DE EMERGENCIA (Justo después del título)
-if st.button("🔄 Forzar Reinicio de Conexión"):
+# Botón de pánico para limpiar caché
+if st.sidebar.button("🔄 Refrescar Datos"):
     st.cache_data.clear()
     st.cache_resource.clear()
     st.rerun()
 
-# --- CONEXIÓN A GOOGLE SHEETS ---
-# Usamos el link limpio (sin el ?usp=sharing para evitar problemas)
+# --- 2. CONEXIÓN (La misma que ya funcionaba) ---
 url_sheet = "https://docs.google.com/spreadsheets/d/1MfLBejcF2aOLi6JeZgXij8p1rZ1EPZzsV9NGpNvsJC4/edit"
-
-# Creamos la conexión
 conn = st.connection("gsheets", type=GSheetsConnection)
 
-# Función para traer los datos frescos
-def cargar_datos():
-    # Especificamos worksheet="Insumos" para ser precisos y evitar errores si mueves las hojas
+# --- 3. FUNCIONES DE CARGA DE DATOS ---
+def cargar_insumos():
     return conn.read(spreadsheet=url_sheet, worksheet="Insumos")
 
-# --- INTERFAZ DE USUARIO ---
+def cargar_productos():
+    # Si la hoja está vacía, devuelve un DataFrame con las columnas correctas
+    try:
+        df = conn.read(spreadsheet=url_sheet, worksheet="Productos")
+        if df.empty:
+            return pd.DataFrame(columns=["ID", "Nombre", "Precio_Venta", "Stock_Terminado"])
+        return df
+    except:
+        return pd.DataFrame(columns=["ID", "Nombre", "Precio_Venta", "Stock_Terminado"])
 
-# 1. MOSTRAR INVENTARIO ACTUAL
-st.subheader("📦 Almacén de Telas e Insumos")
+def cargar_recetas():
+    try:
+        df = conn.read(spreadsheet=url_sheet, worksheet="Recetas")
+        if df.empty:
+            return pd.DataFrame(columns=["ID_Producto", "ID_Insumo", "Cantidad"])
+        return df
+    except:
+        return pd.DataFrame(columns=["ID_Producto", "ID_Insumo", "Cantidad"])
 
-# Manejo de errores por si la hoja está vacía o falla la carga
-try:
-    df_insumos = cargar_datos()
-    # Mostramos la tabla interactiva
+# Cargamos todo al inicio
+df_insumos = cargar_insumos()
+df_productos = cargar_productos()
+df_recetas = cargar_recetas()
+
+# --- 4. INTERFAZ CON PESTAÑAS ---
+tab1, tab2, tab3 = st.tabs(["📦 Almacén (Insumos)", "👕 Mis Productos", "📝 Recetas (Costos)"])
+
+# ==========================================
+# PESTAÑA 1: ALMACÉN DE INSUMOS (Lo del Lunes mejorado)
+# ==========================================
+with tab1:
+    st.header("Inventario de Materia Prima")
     st.dataframe(df_insumos, width='stretch')
-except Exception as e:
-    st.error(f"No se pudo cargar la tabla. Verifica que la hoja se llame 'Insumos'. Error: {e}")
-    df_insumos = pd.DataFrame() # DataFrame vacío para que no falle lo de abajo
-
-# 2. FORMULARIO PARA AGREGAR NUEVO MATERIAL
-st.divider()
-st.subheader("➕ Registrar Nueva Compra / Material")
-
-with st.form("form_nuevo_insumo"):
-    col1, col2 = st.columns(2)
     
-    with col1:
-        nuevo_id = st.text_input("Código (ID)", placeholder="Ej: T-005")
-        nuevo_nombre = st.text_input("Nombre del Material", placeholder="Ej: Paño Inglés Gris")
-        nueva_categoria = st.selectbox("Categoría", ["Tela", "Forro", "Avíos (Botones/Cierres)", "Hilos", "Otros"])
-    
-    with col2:
-        nuevo_stock = st.number_input("Cantidad Comprada", min_value=0.0, step=0.1)
-        nueva_unidad = st.selectbox("Unidad de Medida", ["Metros", "Unidades", "Conos", "Yardas"])
-        nuevo_costo = st.number_input("Costo Total de la Compra (Bs)", min_value=0.0, step=1.0)
-        stock_minimo = st.number_input("Alerta de Stock Mínimo", value=5.0)
-
-    # Botón de envío
-    submitted = st.form_submit_button("💾 Guardar en Inventario")
-
-    if submitted:
-        # Verificamos que no falten datos básicos
-        if not nuevo_id or not nuevo_nombre:
-            st.warning("⚠️ El ID y el Nombre son obligatorios.")
-        else:
-            try:
-                # 1. Crear el nuevo registro
+    with st.expander("➕ Agregar Nuevo Insumo"):
+        with st.form("form_insumo"):
+            c1, c2, c3 = st.columns(3)
+            nuevo_id = c1.text_input("ID Insumo", placeholder="Ej: B-CHICO")
+            nuevo_nom = c2.text_input("Nombre")
+            nuevo_costo = c3.number_input("Costo Unitario (Bs)", min_value=0.0, format="%.2f")
+            
+            c4, c5, c6 = st.columns(3)
+            nueva_cat = c4.selectbox("Categoría", ["Tela", "Forro", "Avíos", "Hilos", "Servicio"])
+            nuevo_stock = c5.number_input("Stock Inicial", min_value=0.0)
+            nueva_unidad = c6.text_input("Unidad", value="Unidades")
+            
+            if st.form_submit_button("Guardar Insumo"):
                 nuevo_dato = pd.DataFrame([{
-                    "ID": nuevo_id,
-                    "Nombre": nuevo_nombre,
-                    "Categoria": nueva_categoria,
-                    "Stock_Actual": nuevo_stock,
-                    "Unidad": nueva_unidad,
-                    "Stock_Minimo": stock_minimo,
-                    "Costo_Promedio": nuevo_costo
+                    "ID": nuevo_id, "Nombre": nuevo_nom, "Categoria": nueva_cat,
+                    "Stock_Actual": nuevo_stock, "Unidad": nueva_unidad, 
+                    "Stock_Minimo": 5, "Costo_Promedio": nuevo_costo
                 }])
-
-                # 2. Unir con los datos existentes
-                # Si la tabla estaba vacía, el nuevo dato es el único
-                if df_insumos.empty:
-                    df_actualizado = nuevo_dato
-                else:
-                    df_actualizado = pd.concat([df_insumos, nuevo_dato], ignore_index=True)
-
-                # 3. Subir TODO de nuevo a Google Sheets
-                conn.update(spreadsheet=url_sheet, worksheet="Insumos", data=df_actualizado)
-                
-                st.success(f"✅ ¡{nuevo_nombre} agregado correctamente!")
-                
-                # 4. Esperar 1 segundo y recargar
-                import time
-                time.sleep(1) 
+                df_updated = pd.concat([df_insumos, nuevo_dato], ignore_index=True)
+                conn.update(spreadsheet=url_sheet, worksheet="Insumos", data=df_updated)
+                st.success("Guardado!")
+                time.sleep(1)
                 st.rerun()
+
+# ==========================================
+# PESTAÑA 2: PRODUCTOS (Sacos, etc.)
+# ==========================================
+with tab2:
+    st.header("Catálogo de Productos")
+    st.dataframe(df_productos, width='stretch')
+    
+    with st.expander("➕ Crear Nuevo Modelo de Saco"):
+        with st.form("form_producto"):
+            col_a, col_b = st.columns(2)
+            prod_id = col_a.text_input("ID Producto", placeholder="Ej: SACO-H-L")
+            prod_nom = col_b.text_input("Nombre del Modelo", placeholder="Ej: Saco Varón Talla L")
+            prod_precio = st.number_input("Precio de Venta (Bs)", min_value=0.0)
+            
+            if st.form_submit_button("Crear Producto"):
+                nuevo_prod = pd.DataFrame([{
+                    "ID": prod_id, "Nombre": prod_nom, 
+                    "Precio_Venta": prod_precio, "Stock_Terminado": 0
+                }])
                 
-            except Exception as e:
-                st.error(f"Error al guardar: {e}")
-                st.info("💡 Consejo: Verifica que en Google Sheets el usuario 'bot-tic@...' tenga permiso de EDITOR.")
+                if df_productos.empty:
+                    df_upd = nuevo_prod
+                else:
+                    df_upd = pd.concat([df_productos, nuevo_prod], ignore_index=True)
+                
+                conn.update(spreadsheet=url_sheet, worksheet="Productos", data=df_upd)
+                st.success("Producto Creado!")
+                time.sleep(1)
+                st.rerun()
+
+# ==========================================
+# PESTAÑA 3: RECETAS (El Cerebro)
+# ==========================================
+with tab3:
+    st.header("👨‍🍳 Definir Receta (Ficha Técnica)")
+    st.info("Aquí le decimos al sistema: 'Un Saco Varón lleva 1.6m de Tela, 6 Botones chicos, etc.'")
+    
+    col_izq, col_der = st.columns([1, 2])
+    
+    with col_izq:
+        st.subheader("Agregar Ingrediente")
+        
+        # Selectores inteligentes
+        lista_productos = df_productos["ID"].tolist() if not df_productos.empty else []
+        lista_insumos = df_insumos["ID"].tolist() + [" - "]
+        
+        # Formulario de receta
+        with st.form("form_receta"):
+            prod_seleccionado = st.selectbox("Selecciona el Producto", lista_productos)
+            
+            # Buscamos el nombre del insumo para que sea fácil elegir
+            diccionario_insumos = dict(zip(df_insumos["Nombre"], df_insumos["ID"]))
+            nombre_insumo = st.selectbox("Selecciona Material", list(diccionario_insumos.keys()))
+            id_insumo_seleccionado = diccionario_insumos[nombre_insumo]
+            
+            cantidad = st.number_input("Cantidad Necesaria", min_value=0.01, step=0.01)
+            
+            if st.form_submit_button("🔗 Vincular Material"):
+                nueva_relacion = pd.DataFrame([{
+                    "ID_Producto": prod_seleccionado,
+                    "ID_Insumo": id_insumo_seleccionado,
+                    "Cantidad": cantidad
+                }])
+                
+                if df_recetas.empty:
+                    df_r_upd = nueva_relacion
+                else:
+                    df_r_upd = pd.concat([df_recetas, nueva_relacion], ignore_index=True)
+                    
+                conn.update(spreadsheet=url_sheet, worksheet="Recetas", data=df_r_upd)
+                st.toast(f"Agregado: {cantidad} de {nombre_insumo} a {prod_seleccionado}")
+                time.sleep(1)
+                st.rerun()
+
+    with col_der:
+        st.subheader("📋 Recetas Actuales")
+        # Mostramos la tabla uniendo datos para que se entienda (Merge)
+        if not df_recetas.empty and not df_insumos.empty:
+            # Unimos Receta con Insumos para ver nombres y costos
+            receta_detalle = pd.merge(df_recetas, df_insumos[['ID', 'Nombre', 'Unidad', 'Costo_Promedio']], 
+                                     left_on='ID_Insumo', right_on='ID', how='left')
+            
+            # Calculamos costo parcial
+            receta_detalle['Costo_Insumo'] = receta_detalle['Cantidad'] * receta_detalle['Costo_Promedio']
+            
+            # Mostramos tabla limpia
+            st.dataframe(receta_detalle[['ID_Producto', 'Nombre', 'Cantidad', 'Unidad', 'Costo_Insumo']], width='stretch')
+            
+            # COSTO TOTAL POR PRODUCTO
+            st.divider()
+            st.subheader("💰 Costo Total Teórico")
+            costos_totales = receta_detalle.groupby("ID_Producto")['Costo_Insumo'].sum().reset_index()
+            st.dataframe(costos_totales)
+        else:
+            st.warning("No hay recetas definidas aún.")
