@@ -2,200 +2,250 @@ import streamlit as st
 from streamlit_gsheets import GSheetsConnection
 import pandas as pd
 import time
+from datetime import datetime
 
-# --- 1. CONFIGURACIÓN INICIAL ---
+# --- 1. CONFIGURACIÓN DE PÁGINA Y ESTILO ---
 st.set_page_config(page_title="Caserito Store", page_icon="✂️", layout="wide")
-st.title("✂️ Caserito Store: Sistema de Producción")
 
-# Botón de pánico para limpiar caché
-if st.sidebar.button("🔄 Refrescar Datos"):
-    st.cache_data.clear()
-    st.cache_resource.clear()
-    st.rerun()
-
-# --- 2. CONEXIÓN ---
+# --- 2. CONEXIÓN Y CARGA DE DATOS ---
 url_sheet = "https://docs.google.com/spreadsheets/d/1MfLBejcF2aOLi6JeZgXij8p1rZ1EPZzsV9NGpNvsJC4/edit"
 conn = st.connection("gsheets", type=GSheetsConnection)
 
-# --- 3. FUNCIONES DE CARGA (Para que sea rápido) ---
 def cargar_data(hoja, columnas_default):
     try:
         df = conn.read(spreadsheet=url_sheet, worksheet=hoja)
-        if df.empty:
-            return pd.DataFrame(columns=columnas_default)
-        # Aseguramos que las columnas numéricas sean números y no texto
+        if df.empty: return pd.DataFrame(columns=columnas_default)
         return df
-    except:
-        return pd.DataFrame(columns=columnas_default)
+    except: return pd.DataFrame(columns=columnas_default)
 
-# Cargamos los 3 cerebros
+# Cargar todo
 df_insumos = cargar_data("Insumos", ["ID", "Nombre", "Categoria", "Stock_Actual", "Unidad", "Stock_Minimo", "Costo_Promedio"])
 df_productos = cargar_data("Productos", ["ID", "Nombre", "Precio_Venta", "Stock_Terminado"])
 df_recetas = cargar_data("Recetas", ["ID_Producto", "ID_Insumo", "Cantidad"])
+df_ventas = cargar_data("Ventas", ["Fecha", "ID_Producto", "Cantidad", "Total_Venta", "Ganancia"])
 
-# Convertir columnas numéricas a float/int para evitar errores de cálculo
-if not df_insumos.empty:
-    df_insumos["Stock_Actual"] = pd.to_numeric(df_insumos["Stock_Actual"], errors='coerce').fillna(0)
-    df_insumos["Costo_Promedio"] = pd.to_numeric(df_insumos["Costo_Promedio"], errors='coerce').fillna(0)
+# Limpieza de datos
+def limpiar_df(df, cols_num):
+    if not df.empty:
+        for col in cols_num:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+    return df
 
-if not df_recetas.empty:
-    df_recetas["Cantidad"] = pd.to_numeric(df_recetas["Cantidad"], errors='coerce').fillna(0)
+df_insumos = limpiar_df(df_insumos, ["Stock_Actual", "Costo_Promedio", "Stock_Minimo"])
+df_productos = limpiar_df(df_productos, ["Precio_Venta", "Stock_Terminado"])
+df_recetas = limpiar_df(df_recetas, ["Cantidad"])
+df_ventas = limpiar_df(df_ventas, ["Total_Venta", "Ganancia", "Cantidad"])
+if not df_ventas.empty: df_ventas["Fecha"] = pd.to_datetime(df_ventas["Fecha"], errors='coerce')
 
-if not df_productos.empty:
-    df_productos["Stock_Terminado"] = pd.to_numeric(df_productos["Stock_Terminado"], errors='coerce').fillna(0)
-
-
-# --- 4. INTERFAZ ---
-tab1, tab2, tab3, tab4 = st.tabs(["📦 Almacén", "👕 Productos", "📝 Recetas", "🏭 PRODUCIR (Automático)"])
-
-# ==========================================
-# PESTAÑA 1: ALMACÉN (INSUMOS)
-# ==========================================
-with tab1:
-    st.header("Inventario de Materia Prima")
+# --- 3. MENÚ LATERAL (SIDEBAR) ---
+with st.sidebar:
+    st.title("✂️ Caserito Store")
+    st.divider()
     
-    # Alerta visual de stock bajo
-    if not df_insumos.empty:
-        stock_bajo = df_insumos[df_insumos["Stock_Actual"] <= df_insumos["Stock_Minimo"]]
-        if not stock_bajo.empty:
-            st.error(f"⚠️ ¡ATENCIÓN! Tienes {len(stock_bajo)} materiales con stock bajo.")
-            st.dataframe(stock_bajo[["Nombre", "Stock_Actual", "Stock_Minimo"]], hide_index=True)
-
-    st.dataframe(df_insumos, width='stretch')
+    st.subheader("📍 Navegación")
+    opcion = st.radio(
+        "Ir a:",
+        ["📊 Dashboard Principal", 
+         "🏭 Registrar Producción", 
+         "🛒 Registrar Venta", 
+         "📦 Gestión de Almacén", 
+         "👕 Gestión de Productos", 
+         "📝 Gestión de Recetas"],
+        index=0
+    )
     
-    with st.expander("➕ Agregar Compra de Material"):
-        with st.form("form_insumo"):
-            c1, c2, c3 = st.columns(3)
-            nuevo_id = c1.text_input("ID Insumo", placeholder="Ej: T-001")
-            nuevo_nom = c2.text_input("Nombre")
-            nuevo_costo = c3.number_input("Costo Unitario", min_value=0.0)
-            c4, c5 = st.columns(2)
-            nuevo_stock = c4.number_input("Cantidad", min_value=0.0)
-            nueva_cat = c5.selectbox("Categoría", ["Tela", "Forro", "Avíos", "Hilos", "Servicio"])
-            
-            if st.form_submit_button("Guardar"):
-                if nuevo_id in df_insumos["ID"].values:
-                     st.warning("Ese ID ya existe. Usa otro.")
-                else:
-                    nuevo_dato = pd.DataFrame([{
-                        "ID": nuevo_id, "Nombre": nuevo_nom, "Categoria": nueva_cat,
-                        "Stock_Actual": nuevo_stock, "Unidad": "Unidad", 
-                        "Stock_Minimo": 5, "Costo_Promedio": nuevo_costo
-                    }])
-                    df_upd = pd.concat([df_insumos, nuevo_dato], ignore_index=True)
-                    conn.update(spreadsheet=url_sheet, worksheet="Insumos", data=df_upd)
-                    st.success("Guardado!")
-                    time.sleep(1)
-                    st.rerun()
+    st.divider()
+    if st.button("🔄 Actualizar Datos"):
+        st.cache_data.clear()
+        st.cache_resource.clear()
+        st.rerun()
 
-# ==========================================
-# PESTAÑA 2: PRODUCTOS
-# ==========================================
-with tab2:
-    st.header("Mis Productos (Sacos)")
-    st.dataframe(df_productos, width='stretch')
+# --- 4. LÓGICA DE PÁGINAS ---
+
+# ========================================================
+# PÁGINA 1: DASHBOARD PRINCIPAL (COMPLETO)
+# ========================================================
+if opcion == "📊 Dashboard Principal":
+    st.title("📊 Centro de Comando")
     
-    with st.expander("➕ Nuevo Modelo"):
-        with st.form("form_prod"):
-            pid = st.text_input("ID Producto", placeholder="Ej: SACO-H")
-            pnom = st.text_input("Nombre")
-            pprecio = st.number_input("Precio Venta", min_value=0.0)
-            if st.form_submit_button("Crear"):
-                nuevo = pd.DataFrame([{"ID": pid, "Nombre": pnom, "Precio_Venta": pprecio, "Stock_Terminado": 0}])
-                conn.update(spreadsheet=url_sheet, worksheet="Productos", data=pd.concat([df_productos, nuevo], ignore_index=True))
-                st.rerun()
+    # --- NIVEL 1: FINANZAS (KPIs) ---
+    st.subheader("💰 Resumen Financiero")
+    col1, col2, col3, col4 = st.columns(4)
+    
+    ingresos = df_ventas["Total_Venta"].sum() if not df_ventas.empty else 0
+    ganancia = df_ventas["Ganancia"].sum() if not df_ventas.empty else 0
+    prendas = df_ventas["Cantidad"].sum() if not df_ventas.empty else 0
+    dinero_insumos = (df_insumos["Stock_Actual"] * df_insumos["Costo_Promedio"]).sum()
+    
+    col1.metric("Ingresos Totales", f"Bs {ingresos:,.2f}")
+    col2.metric("Ganancia Neta", f"Bs {ganancia:,.2f}", delta="Beneficio")
+    col3.metric("Prendas Vendidas", f"{int(prendas)}")
+    col4.metric("Capital en Insumos", f"Bs {dinero_insumos:,.2f}", delta="Stock Valorado", delta_color="off")
+    
+    st.divider()
 
-# ==========================================
-# PESTAÑA 3: RECETAS
-# ==========================================
-with tab3:
-    st.header("Fichas Técnicas (Recetas)")
-    c_izq, c_der = st.columns([1, 2])
-    with c_izq:
-        with st.form("form_receta"):
-            st.subheader("Vincular Materiales")
-            prod_sel = st.selectbox("Producto", df_productos["ID"].unique() if not df_productos.empty else [])
+    # --- NIVEL 2: RENDIMIENTO DE VENTAS (LO QUE PEDISTE) ---
+    st.subheader("📈 Rendimiento de Ventas")
+    
+    if not df_ventas.empty:
+        g1, g2 = st.columns(2)
+        
+        with g1:
+            st.write("**Tendencia de Ventas (Por Día)**")
+            # Agrupar por fecha
+            ventas_dia = df_ventas.groupby(df_ventas["Fecha"].dt.date)["Total_Venta"].sum()
+            st.bar_chart(ventas_dia, color="#4CAF50") # Verde
             
-            # Crear diccionario Nombre -> ID
-            mapa_insumos = dict(zip(df_insumos["Nombre"], df_insumos["ID"])) if not df_insumos.empty else {}
-            insumo_nom = st.selectbox("Material", list(mapa_insumos.keys()))
-            
-            cant = st.number_input("Cantidad usada por unidad", min_value=0.01, step=0.01)
-            
-            if st.form_submit_button("Agregar a Receta"):
-                id_ins = mapa_insumos[insumo_nom]
-                nueva_receta = pd.DataFrame([{"ID_Producto": prod_sel, "ID_Insumo": id_ins, "Cantidad": cant}])
-                conn.update(spreadsheet=url_sheet, worksheet="Recetas", data=pd.concat([df_recetas, nueva_receta], ignore_index=True))
-                st.rerun()
-                
-    with c_der:
-        if not df_recetas.empty:
-            # Mostrar receta con nombres legibles
-            vista = pd.merge(df_recetas, df_insumos[["ID", "Nombre"]], left_on="ID_Insumo", right_on="ID")
-            st.dataframe(vista[["ID_Producto", "Nombre", "Cantidad"]], width='stretch')
+        with g2:
+            st.write("**🏆 Top Productos Más Vendidos**")
+            top_prod = df_ventas.groupby("ID_Producto")["Cantidad"].sum().sort_values(ascending=False).head(5)
+            st.bar_chart(top_prod, horizontal=True, color="#FF9800") # Naranja
+    else:
+        st.info("Registra tu primera venta para ver los gráficos aquí.")
 
-# ==========================================
-# PESTAÑA 4: PRODUCCIÓN (AUTOMATIZACIÓN)
-# ==========================================
-with tab4:
-    st.header("🏭 Registrar Producción")
-    st.info("Al registrar, se descontarán automáticamente los materiales y aumentará el stock de sacos.")
+    st.divider()
+    
+    # --- NIVEL 3: SALUD DEL ALMACÉN ---
+    st.subheader("📦 Salud del Inventario")
+    col_izq, col_der = st.columns(2)
+    
+    with col_izq:
+        st.write("**⚠️ Alerta: Stock Crítico**")
+        if not df_insumos.empty:
+            criticos = df_insumos[df_insumos["Stock_Actual"] <= df_insumos["Stock_Minimo"]]
+            if not criticos.empty:
+                st.dataframe(criticos[["Nombre", "Stock_Actual", "Stock_Minimo"]], hide_index=True, use_container_width=True)
+            else:
+                st.success("✅ Todo el inventario está bien.")
+        else: st.info("Sin datos.")
+
+    with col_der:
+        st.write("**Insumos con Mayor Stock**")
+        if not df_insumos.empty:
+            top_stock = df_insumos.sort_values(by="Stock_Actual", ascending=False).head(5)
+            st.bar_chart(top_stock.set_index("Nombre")["Stock_Actual"], color="#2196F3") # Azul
+        else: st.info("Sin datos.")
+
+# ========================================================
+# PÁGINA 2: REGISTRAR PRODUCCIÓN
+# ========================================================
+elif opcion == "🏭 Registrar Producción":
+    st.title("🏭 Fábrica: Registrar Confección")
     
     col_a, col_b = st.columns(2)
+    pfab = col_a.selectbox("¿Qué se fabricó?", df_productos["ID"].unique() if not df_productos.empty else [])
+    qfab = col_b.number_input("Cantidad Fabricada", min_value=1, step=1)
     
-    with col_a:
-        prod_a_fabricar = st.selectbox("¿Qué se fabricó?", df_productos["ID"].unique() if not df_productos.empty else [])
-        cantidad_a_fabricar = st.number_input("Cantidad Fabricada", min_value=1, step=1, value=1)
-    
-    # 1. CALCULAR REQUERIMIENTOS
-    if prod_a_fabricar:
-        # Filtrar la receta de este producto
-        receta_filtro = df_recetas[df_recetas["ID_Producto"] == prod_a_fabricar]
-        
-        if receta_filtro.empty:
-            st.warning("⚠️ Este producto NO tiene receta definida. No se descontará nada.")
+    if pfab:
+        receta = df_recetas[df_recetas["ID_Producto"] == pfab]
+        if receta.empty:
+            st.warning("⚠️ No hay receta para este producto. Configúrala en 'Gestión de Recetas'.")
         else:
-            st.subheader("📋 Materiales a Descontar:")
+            val = pd.merge(receta, df_insumos, left_on="ID_Insumo", right_on="ID", suffixes=("_r", "_s"))
+            val["Req"] = val["Cantidad"] * qfab
+            val["Futuro"] = val["Stock_Actual"] - val["Req"]
+            possible = val["Futuro"] >= 0
             
-            # Unir con stock actual para validar
-            validacion = pd.merge(receta_filtro, df_insumos, left_on="ID_Insumo", right_on="ID", suffixes=("_receta", "_stock"))
-            validacion["Consumo_Total"] = validacion["Cantidad"] * cantidad_a_fabricar
-            validacion["Stock_Futuro"] = validacion["Stock_Actual"] - validacion["Consumo_Total"]
-            validacion["Es_Posible"] = validacion["Stock_Futuro"] >= 0
+            st.write("Materiales a descontar:")
+            st.dataframe(val[["Nombre", "Stock_Actual", "Req", "Futuro"]], hide_index=True)
             
-            # Mostrar tabla de validación bonita
-            st.dataframe(validacion[["Nombre", "Stock_Actual", "Consumo_Total", "Stock_Futuro", "Es_Posible"]], hide_index=True)
-            
-            # Verificar si alcanza todo
-            falta_material = not validacion["Es_Posible"].all()
-            
-            if falta_material:
-                st.error("🛑 NO HAY SUFICIENTE STOCK DE MATERIALES. Compra más antes de registrar.")
+            if possible.all():
+                if st.button("🚀 Confirmar y Descontar Material", type="primary"):
+                    for i, r in val.iterrows():
+                        idx = df_insumos[df_insumos["ID"] == r["ID_Insumo"]].index[0]
+                        df_insumos.at[idx, "Stock_Actual"] = r["Futuro"]
+                    
+                    idx_p = df_productos[df_productos["ID"] == pfab].index[0]
+                    df_productos.at[idx_p, "Stock_Terminado"] += qfab
+                    
+                    conn.update(spreadsheet=url_sheet, worksheet="Insumos", data=df_insumos)
+                    conn.update(spreadsheet=url_sheet, worksheet="Productos", data=df_productos)
+                    st.success("✅ Producción registrada."); time.sleep(2); st.rerun()
             else:
-                st.success("✅ Stock suficiente. Listo para fabricar.")
-                
-                # BOTÓN FINAL DE EJECUCIÓN
-                if st.button("🚀 CONFIRMAR CONFECCIÓN", type="primary"):
-                    try:
-                        # 1. Descontar Insumos
-                        for index, row in validacion.iterrows():
-                            # Buscamos el índice en el DF original de insumos
-                            idx_insumo = df_insumos[df_insumos["ID"] == row["ID_Insumo"]].index[0]
-                            df_insumos.at[idx_insumo, "Stock_Actual"] = row["Stock_Futuro"]
-                        
-                        # 2. Aumentar Stock de Producto Terminado
-                        idx_prod = df_productos[df_productos["ID"] == prod_a_fabricar].index[0]
-                        stock_viejo = df_productos.at[idx_prod, "Stock_Terminado"]
-                        df_productos.at[idx_prod, "Stock_Terminado"] = stock_viejo + cantidad_a_fabricar
-                        
-                        # 3. Guardar en Google Sheets (ACTUALIZACIÓN MASIVA)
-                        conn.update(spreadsheet=url_sheet, worksheet="Insumos", data=df_insumos)
-                        conn.update(spreadsheet=url_sheet, worksheet="Productos", data=df_productos)
-                        
-                        st.balloons()
-                        st.success(f"¡Éxito! Se fabricaron {cantidad_a_fabricar} unidades de {prod_a_fabricar}.")
-                        time.sleep(2)
-                        st.rerun()
-                        
-                    except Exception as e:
-                        st.error(f"Error al guardar: {e}")
+                st.error("🛑 Falta material. Revisa la tabla.")
+
+# ========================================================
+# PÁGINA 3: REGISTRAR VENTA
+# ========================================================
+elif opcion == "🛒 Registrar Venta":
+    st.title("🛒 Caja: Registrar Venta")
+    
+    c1, c2, c3 = st.columns(3)
+    pven = c1.selectbox("Producto", df_productos["ID"].unique() if not df_productos.empty else [])
+    
+    stock_disp = 0
+    precio_base = 0
+    if pven and not df_productos.empty:
+        row = df_productos[df_productos["ID"]==pven].iloc[0]
+        stock_disp = row["Stock_Terminado"]
+        precio_base = row["Precio_Venta"]
+        
+    c1.caption(f"Stock Disponible: {stock_disp}")
+    
+    qven = c2.number_input("Cantidad", 1, max_value=int(stock_disp) if stock_disp > 0 else 1)
+    total_calc = qven * precio_base
+    total_final = c3.number_input("Total Venta (Bs)", value=float(total_calc))
+    
+    if st.button("💸 Cobrar y Registrar", type="primary"):
+        if stock_disp < qven:
+            st.error("No hay stock suficiente.")
+        else:
+            receta = df_recetas[df_recetas["ID_Producto"] == pven]
+            merge = pd.merge(receta, df_insumos, left_on="ID_Insumo", right_on="ID")
+            costo_unit = (merge["Cantidad"] * merge["Costo_Promedio"]).sum() if not merge.empty else 0
+            ganancia = total_final - (costo_unit * qven)
+            
+            nueva = pd.DataFrame([{
+                "Fecha": datetime.now().strftime("%Y-%m-%d"),
+                "ID_Producto": pven, "Cantidad": qven, 
+                "Total_Venta": total_final, "Ganancia": ganancia
+            }])
+            idx = df_productos[df_productos["ID"]==pven].index[0]
+            df_productos.at[idx, "Stock_Terminado"] -= qven
+            
+            conn.update(spreadsheet=url_sheet, worksheet="Ventas", data=pd.concat([df_ventas, nueva], ignore_index=True))
+            conn.update(spreadsheet=url_sheet, worksheet="Productos", data=df_productos)
+            st.balloons(); st.success("✅ Venta registrada."); time.sleep(2); st.rerun()
+
+# ========================================================
+# PÁGINAS DE GESTIÓN (ADMIN)
+# ========================================================
+elif opcion == "📦 Gestión de Almacén":
+    st.header("📦 Inventario de Insumos")
+    st.dataframe(df_insumos, use_container_width=True)
+    with st.expander("➕ Agregar Nuevo Insumo / Compra"):
+        with st.form("add_ins"):
+            i_id = st.text_input("ID"); i_nom = st.text_input("Nombre")
+            i_st = st.number_input("Stock Inicial"); i_cos = st.number_input("Costo")
+            i_min = st.number_input("Stock Mínimo Aviso", value=5)
+            i_cat = st.selectbox("Categoría", ["Tela", "Avíos", "Hilos", "Otros"])
+            if st.form_submit_button("Guardar"):
+                nd = pd.DataFrame([{"ID": i_id, "Nombre": i_nom, "Stock_Actual": i_st, "Costo_Promedio": i_cos, "Categoria": i_cat, "Unidad": "U", "Stock_Minimo": i_min}])
+                conn.update(spreadsheet=url_sheet, worksheet="Insumos", data=pd.concat([df_insumos, nd], ignore_index=True)); st.rerun()
+
+elif opcion == "👕 Gestión de Productos":
+    st.header("👕 Catálogo de Productos")
+    st.dataframe(df_productos, use_container_width=True)
+    with st.expander("➕ Crear Nuevo Modelo"):
+        with st.form("add_prod"):
+            p_id = st.text_input("ID"); p_nom = st.text_input("Nombre"); p_pre = st.number_input("Precio Venta")
+            if st.form_submit_button("Guardar"):
+                np = pd.DataFrame([{"ID": p_id, "Nombre": p_nom, "Precio_Venta": p_pre, "Stock_Terminado": 0}])
+                conn.update(spreadsheet=url_sheet, worksheet="Productos", data=pd.concat([df_productos, np], ignore_index=True)); st.rerun()
+
+elif opcion == "📝 Gestión de Recetas":
+    st.header("📝 Fichas Técnicas (Recetas)")
+    c1, c2 = st.columns(2)
+    with c1:
+        st.write("Vincular Insumo a Producto")
+        with st.form("add_rec"):
+            ps = st.selectbox("Producto", df_productos["ID"].unique() if not df_productos.empty else [])
+            ins = st.selectbox("Insumo", df_insumos["ID"].unique() if not df_insumos.empty else [])
+            cant = st.number_input("Cantidad usada", step=0.01)
+            if st.form_submit_button("Guardar Relación"):
+                nr = pd.DataFrame([{"ID_Producto": ps, "ID_Insumo": ins, "Cantidad": cant}])
+                conn.update(spreadsheet=url_sheet, worksheet="Recetas", data=pd.concat([df_recetas, nr], ignore_index=True)); st.rerun()
+    with c2:
+        st.write("Recetas Actuales")
+        st.dataframe(df_recetas, use_container_width=True)
